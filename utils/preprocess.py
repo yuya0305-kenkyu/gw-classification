@@ -24,10 +24,10 @@ def create_dataframe(hdf_paths: list) -> pd.DataFrame:
     M, dec, ra, snr = np.zeros((0, 42)), [], [], []
     for hdf_path in hdf_paths:
         with h5py.File(hdf_path, 'r') as f:
-            h1_strain = f['injection_samples']['h1_strain'][()]
-            l1_strain = f['injection_samples']['l1_strain'][()]
-            v1_strain = f['injection_samples']['v1_strain'][()]
-            k1_strain = f['injection_samples']['k1_strain'][()]
+            h1_strain = f['injection_samples']['h1_strain'][()].astype(np.float64)
+            l1_strain = f['injection_samples']['l1_strain'][()].astype(np.float64)
+            v1_strain = f['injection_samples']['v1_strain'][()].astype(np.float64)
+            k1_strain = f['injection_samples']['k1_strain'][()].astype(np.float64)
             dec_i = f['injection_parameters']['dec'][()]
             ra_i = f['injection_parameters']['ra'][()]
             snr_i = f['injection_parameters']['injection_snr'][()]
