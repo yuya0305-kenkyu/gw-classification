@@ -23,7 +23,7 @@ BASE_CONFIG = {
     'duration': 32.0,
     'sample_rate': 2048,
     'f_lower': 20.0,
-    'approximant': 'IMRPhenomPv2',
+    'approximant': 'SEOBNRv4',
     'slice_start': -0.20,
     'slice_end': 0.05
 }
