@@ -60,13 +60,13 @@ def create_dataframe(hdf_paths: list) -> pd.DataFrame:
 
                 for d2 in range(d1 + 1, 4):
                     # (i) & (ii) Signals arrival time delay and max cross-correlation
-                    corr = np.correlate(strains[d1][i], strains[d2][i], 'full')
+                    corr = scipy.signal.correlate(strains[d1][i], strains[d2][i], mode='full')
                     corr_argmax = np.argmax(abs(corr))
                     features_i.append(corr_argmax - len(strains[d1][i]) + 1)
                     features_i.append(corr[corr_argmax])
 
                     # (iii) & (iv) Analytic signals delay and max cross-correlation
-                    corr_h = np.correlate(hilberts[d1][i], hilberts[d2][i], 'full')
+                    corr_h = scipy.signal.correlate(hilberts[d1][i], hilberts[d2][i], mode='full')
                     corr_h = np.abs(corr_h)
                     corr_h_argmax = np.argmax(corr_h)
                     features_i.append(corr_h.argmax() - len(strains[d1][i]) + 1)
