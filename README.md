@@ -1,7 +1,7 @@
 # GW-Classification: Gravitational Wave Signal Classifier
 
 PyTorchを用いた重力波（Gravitational Wave）信号分類のための機械学習パイプラインです。
-MLP（多層パーセプトロン）および TCN（Temporal Convolutional Network）を用いて、LIGO（Hanford, Livingston）、Virgo、および KAGRA（HLVK）の各検出器から得られるひずみデータ（Strain data）の特徴を学習し、信号の到来方向（セクター）を分類・予測します。
+MLP（多層パーセプトロン）および TCN（Temporal Convolutional Network）を用いて、LIGO（Hanford, Livingston）、Virgo、および KAGRA（HLVK）の各検出器から得られるデータ（Strain data）の特徴を学習し、信号の到来方向（セクター）を分類・予測します。
 
 ## 特徴 (Features)
 
@@ -37,7 +37,7 @@ gw-classification/
 
 ```bash
 
-git clone [https://github.com/yuya0305-kenkyu/gw-classification.git](https://github.com/yuya0305-kenkyu/gw-classification.git)
+git clone https://github.com/yuya0305-kenkyu/gw-classification.git
 cd gw-classification
 pip install -r requirements.txt
 
@@ -66,9 +66,9 @@ python data_generation/generate_data.py --mode test
 ### 2. モデルの学習
 生成したHDF5ファイルを使用して学習を開始します。
 
-* `--method 1`: MLP
+* `--method 1` : MLP
 
-* `--method 2`: TCN
+* `--method 2` : TCN
 
 ```bash
 # TCNモデルを使用し、KAGRAデータを含めて学習する例
@@ -87,7 +87,7 @@ python plot_history.py weights/history_TCN_HLVK18.csv
 ### 4. 推論（予測）の実行
 テストデータに対して予測を行い、精度（Accuracy）を出力します。
 
-`--method 3`: MLPとTCNのアンサンブル予測
+* `--method 3` : MLPとTCNのアンサンブル予測
 
 ```bash
 # TCNモデルで推論を行う例
