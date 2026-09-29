@@ -8,6 +8,7 @@ import pycbc.psd
 from pycbc.filter import sigmasq
 from pycbc.waveform import get_td_waveform
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 PRESETS = {
     'sample': {'seed': 1, 'num_samples': 100, 'output_file': 'sample_data.hdf5'},
@@ -47,6 +48,17 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def load_psd(det_name: str, flen: int, delta_f: float, f_lower: float, sensitivities_dir: str):
+    path = os.path.join(sensitivities_dir, os.path.basename(PSD_FILES.get(det_name, '')))
+    try:
+        psd = pycbc.psd.from_txt(path, flen, delta_f, f_lower, is_asd_file=True)
+    except Exception:
+        psd = pycbc.psd.aLIGOZeroDetHighPower(flen, delta_f, f_lower)
+        if det_name == 'K1':
+            psd.data *= 10.0
+    return psd
+
+
 def sample_parameters(config: dict) -> dict:
     m1 = np.random.uniform(*config['mass_range'])
     m2 = np.random.uniform(*config['mass_range'])
@@ -69,26 +81,102 @@ def sample_parameters(config: dict) -> dict:
     }
 
 
-def load_psd(det_name: str, flen: int, delta_f: float, f_lower: float, sensitivities_dir: str):
-    path = os.path.join(sensitivities_dir, os.path.basename(PSD_FILES.get(det_name, '')))
-    try:
-        psd = pycbc.psd.from_txt(path, flen, delta_f, f_lower, is_asd_file=True)
-    except Exception:
-        # 感度ファイルが存在しない場合は解析的PSDモデルへフォールバック
-        psd = pycbc.psd.aLIGOZeroDetHighPower(flen, delta_f, f_lower)
-        if det_name == 'K1':
-            psd.data *= 10.0
-    return psd
+def generate_single_sample(i: int, config: dict, base_seed: int, sensitivities_dir: str):
+    """マルチプロセスで実行される1件分のデータ生成ワーカー関数"""
+    # プロセスごとに独立したシードを設定
+    np.random.seed(base_seed + i)
+
+    # PyCBCオブジェクトのPickleエラーを防ぐため、Detectorはプロセス内部で初期化
+    detectors = {name: pycbc.detector.Detector(name) for name in ['H1', 'L1', 'V1', 'K1']}
+    det_indices = {'H1': 0, 'L1': 1, 'V1': 2, 'K1': 3}
+
+    p = sample_parameters(config)
+    sample_rate = config['sample_rate']
+    slice_points = int(round((config['slice_end'] - config['slice_start']) * sample_rate))
+
+    # 1. 基準波形生成
+    hp, hc = get_td_waveform(
+        approximant=config['approximant'],
+        mass1=p['mass1'], mass2=p['mass2'],
+        spin1z=p['spin1z'], spin2z=p['spin2z'],
+        distance=1000.0,
+        inclination=p['inclination'],
+        coa_phase=p['coa_phase'],
+        delta_t=1.0 / sample_rate,
+        f_lower=config['f_lower']
+    )
+
+    net_snr_sq = 0.0
+    signals_no_noise = {}
+
+    # 2. アンテナパターン投影 & 最適SNR計算
+    for name, det in detectors.items():
+        fp, fc = det.antenna_pattern(p['ra'], p['dec'], p['polarization'], 0.0)
+        dt = det.time_delay_from_earth_center(p['ra'], p['dec'], 0.0)
+
+        sig = fp * hp + fc * hc
+        sig.start_time += dt
+
+        sig_snr = sig.copy()
+        sig_snr.resize(int(config['duration'] * sample_rate))
+        flen = int(len(sig_snr) / 2) + 1
+        psd = load_psd(name, flen, sig_snr.delta_f, config['f_lower'], sensitivities_dir)
+
+        snr_sq = sigmasq(sig_snr, psd=psd, low_frequency_cutoff=config['f_lower'])
+        net_snr_sq += snr_sq
+        signals_no_noise[name] = (sig, psd)
+
+    current_net_snr = np.sqrt(net_snr_sq)
+    if current_net_snr == 0:
+        current_net_snr = 1e-10
+    scaling_factor = current_net_snr / p['target_snr']
+
+    strains_dict = {}
+
+    # 3. ノイズ合成 & 切り出し
+    for name, (sig, psd) in signals_no_noise.items():
+        sig_final = sig / scaling_factor
+
+        noise_seed = base_seed + (i * 100) + det_indices[name]
+        noise_len = int(config['duration'] * sample_rate)
+        noise = pycbc.noise.noise_from_psd(noise_len, sig_final.delta_t, psd, seed=noise_seed)
+        noise.start_time = -(config['duration'] / 2.0)
+
+        strain_data = noise.numpy().copy()
+        start_idx = int(round((float(sig_final.start_time) - float(noise.start_time)) * sample_rate))
+        end_idx = start_idx + len(sig_final)
+
+        slice_start = max(0, start_idx)
+        slice_end = min(len(strain_data), end_idx)
+        sig_start = max(0, -start_idx)
+        sig_end = sig_start + (slice_end - slice_start)
+
+        if slice_end > slice_start:
+            strain_data[slice_start:slice_end] += sig_final.numpy()[sig_start:sig_end]
+
+        ext_start_time = config['slice_start']
+        ext_start_idx = int(round((float(ext_start_time) - float(noise.start_time)) * sample_rate))
+        ext_end_idx = ext_start_idx + slice_points
+
+        data_slice = strain_data[ext_start_idx:ext_end_idx]
+        if len(data_slice) < slice_points:
+            data_slice = np.pad(data_slice, (0, slice_points - len(data_slice)))
+
+        key_name = name.lower() + '_strain'
+        strains_dict[key_name] = data_slice
+
+    return i, strains_dict, p
 
 
 def generate_dataset(mode: str, num_samples: int, seed: int, output_file: str, sensitivities_dir: str):
     config = BASE_CONFIG.copy()
-    np.random.seed(seed)
-
+    
     sample_rate = config['sample_rate']
     slice_points = int(round((config['slice_end'] - config['slice_start']) * sample_rate))
 
-    print(f"[{mode.upper()} MODE] Generating {num_samples} samples with Seed {seed} -> {output_file}")
+    # 使用可能なCPUコア数を取得（Colabのハイメモリ環境で真価を発揮）
+    max_cores = os.cpu_count()
+    print(f"[{mode.upper()} MODE] Generating {num_samples} samples using {max_cores} CPU cores (Seed: {seed}) -> {output_file}")
 
     os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
 
@@ -104,84 +192,23 @@ def generate_dataset(mode: str, num_samples: int, seed: int, output_file: str, s
         for k in ['mass1', 'mass2', 'spin1z', 'spin2z', 'ra', 'dec', 'injection_snr']
     }
 
-    detectors = {name: pycbc.detector.Detector(name) for name in ['H1', 'L1', 'V1', 'K1']}
-    det_indices = {'H1': 0, 'L1': 1, 'V1': 2, 'K1': 3}
-
-    for i in tqdm(range(num_samples), desc=f"Generating {mode} data"):
-        p = sample_parameters(config)
-
-        # 1. 基準波形生成
-        hp, hc = get_td_waveform(
-            approximant=config['approximant'],
-            mass1=p['mass1'], mass2=p['mass2'],
-            spin1z=p['spin1z'], spin2z=p['spin2z'],
-            distance=1000.0,
-            inclination=p['inclination'],
-            coa_phase=p['coa_phase'],
-            delta_t=1.0 / sample_rate,
-            f_lower=config['f_lower']
-        )
-
-        net_snr_sq = 0.0
-        signals_no_noise = {}
-
-        # 2. アンテナパターン投影 & 最適SNR計算
-        for name, det in detectors.items():
-            fp, fc = det.antenna_pattern(p['ra'], p['dec'], p['polarization'], 0.0)
-            dt = det.time_delay_from_earth_center(p['ra'], p['dec'], 0.0)
-
-            sig = fp * hp + fc * hc
-            sig.start_time += dt
-
-            sig_snr = sig.copy()
-            sig_snr.resize(int(config['duration'] * sample_rate))
-            flen = int(len(sig_snr) / 2) + 1
-            psd = load_psd(name, flen, sig_snr.delta_f, config['f_lower'], sensitivities_dir)
-
-            snr_sq = sigmasq(sig_snr, psd=psd, low_frequency_cutoff=config['f_lower'])
-            net_snr_sq += snr_sq
-            signals_no_noise[name] = (sig, psd)
-
-        current_net_snr = np.sqrt(net_snr_sq)
-        if current_net_snr == 0:
-            current_net_snr = 1e-10
-        scaling_factor = current_net_snr / p['target_snr']
-
-        # 3. ノイズ合成 & 切り出し
-        for name, (sig, psd) in signals_no_noise.items():
-            sig_final = sig / scaling_factor
-
-            noise_seed = seed + (i * 100) + det_indices[name]
-            noise_len = int(config['duration'] * sample_rate)
-            noise = pycbc.noise.noise_from_psd(noise_len, sig_final.delta_t, psd, seed=noise_seed)
-            noise.start_time = -(config['duration'] / 2.0)
-
-            strain_data = noise.numpy().copy()
-            start_idx = int(round((float(sig_final.start_time) - float(noise.start_time)) * sample_rate))
-            end_idx = start_idx + len(sig_final)
-
-            slice_start = max(0, start_idx)
-            slice_end = min(len(strain_data), end_idx)
-            sig_start = max(0, -start_idx)
-            sig_end = sig_start + (slice_end - slice_start)
-
-            if slice_end > slice_start:
-                strain_data[slice_start:slice_end] += sig_final.numpy()[sig_start:sig_end]
-
-            ext_start_time = config['slice_start']
-            ext_start_idx = int(round((float(ext_start_time) - float(noise.start_time)) * sample_rate))
-            ext_end_idx = ext_start_idx + slice_points
-
-            data_slice = strain_data[ext_start_idx:ext_end_idx]
-            if len(data_slice) < slice_points:
-                data_slice = np.pad(data_slice, (0, slice_points - len(data_slice)))
-
-            key_name = name.lower() + '_strain'
-            data_buffer[key_name][i] = data_slice
-
-        for k in ['mass1', 'mass2', 'spin1z', 'spin2z', 'ra', 'dec']:
-            param_buffer[k][i] = p[k]
-        param_buffer['injection_snr'][i] = p['target_snr']
+    # ProcessPoolExecutorによる並列処理
+    with ProcessPoolExecutor(max_workers=max_cores) as executor:
+        # 全てのタスクをバックグラウンドプロセスに投げる
+        futures = [
+            executor.submit(generate_single_sample, i, config, seed, sensitivities_dir)
+            for i in range(num_samples)
+        ]
+        
+        # 処理が完了したものから順次バッファに書き込む
+        for future in tqdm(as_completed(futures), total=num_samples, desc=f"Generating {mode} data"):
+            i, strains_dict, p = future.result()
+            
+            for key, val in strains_dict.items():
+                data_buffer[key][i] = val
+            for k in ['mass1', 'mass2', 'spin1z', 'spin2z', 'ra', 'dec']:
+                param_buffer[k][i] = p[k]
+            param_buffer['injection_snr'][i] = p['target_snr']
 
     with h5py.File(output_file, 'w') as f:
         grp_samples = f.create_group('injection_samples')
