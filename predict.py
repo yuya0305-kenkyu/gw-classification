@@ -1,5 +1,6 @@
 import argparse
 import os
+import h5py  # 追加: SNRを読み込むために追加
 import numpy as np
 import pandas as pd
 import torch
@@ -85,7 +86,14 @@ if __name__ == '__main__':
 
     input_size = 4 if args.use_KAGRA else 3
     detector = 'HLVK' if args.use_KAGRA else 'HLV'
-    model_name = 'MLP' if args.method == 1 else 'TCN'
+    
+    # 修正: メソッド名（CSVのファイル名用）を正しく3パターン判定
+    if args.method == 1:
+        model_name = 'MLP'
+    elif args.method == 2:
+        model_name = 'TCN'
+    else:
+        model_name = 'Combined'
 
     df_ = None
     X = None
@@ -111,6 +119,14 @@ if __name__ == '__main__':
         n_sectors_list = [2 * i * i for i in range(3, 11)]
     else:
         n_sectors_list = [12 * (4 ** i) for i in range(3)]
+
+    # === 追加処理: HDF5ファイル群からSNRのリストを一括抽出 ===
+    snrs = []
+    for hdf_path in args.hdf_file:
+        with h5py.File(hdf_path, 'r') as f:
+            snrs += list(f['injection_parameters']['injection_snr'][()])
+    snrs = np.array(snrs)
+    # ==========================================================
 
     accs = []
     print('Starting prediction...')
@@ -147,6 +163,24 @@ if __name__ == '__main__':
             raise ValueError("Select method 1 (MLP), 2 (TCN), or 3 (Combined)")
 
         accs.append(accuracy)
-        print(f'n_sectors: {n_sectors} | Accuracy: {accuracy:.4f}')
 
-    print('Overall Accuracies across resolutions:', accs)
+        # === 追加処理: 予測結果をPandas DataFrameにしてCSV保存 ===
+        # 各メソッドが返す y_pred (確率分布) から、最も確率の高いセクタを抽出
+        preds = np.argmax(y_pred, axis=1)
+        
+        df_results = pd.DataFrame({
+            'True_Sector': labels,
+            'Pred_Sector': preds,
+            'SNR': snrs[:len(labels)],  # データ件数を揃える
+            'Is_Correct': (np.array(labels) == preds).astype(int),
+            'Network': detector,
+            'N_Sectors': n_sectors
+        })
+        
+        out_csv = f"results_{model_name}_{detector}_{n_sectors}sectors.csv"
+        df_results.to_csv(out_csv, index=False)
+        # ==========================================================
+
+        print(f'n_sectors: {n_sectors} | Accuracy: {accuracy:.4f} | Detailed CSV: {out_csv}')
+
+    print('\nOverall Accuracies across resolutions:', accs)
