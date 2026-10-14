@@ -26,6 +26,8 @@ def get_arguments():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--method", type=int, default=1, help="1: MLP, 2: TCN, 3: Combined Ensemble")
     parser.add_argument("--weights_directory", default='weights')
+    # === 追加: CSVの出力先ディレクトリを指定する引数 ===
+    parser.add_argument("--out_csv_dir", type=str, default=".", help="Directory to save detailed result CSVs")
     return parser.parse_args()
 
 
@@ -165,19 +167,23 @@ if __name__ == '__main__':
         accs.append(accuracy)
 
         # === 追加処理: 予測結果をPandas DataFrameにしてCSV保存 ===
-        # 各メソッドが返す y_pred (確率分布) から、最も確率の高いセクタを抽出
         preds = np.argmax(y_pred, axis=1)
         
         df_results = pd.DataFrame({
             'True_Sector': labels,
             'Pred_Sector': preds,
-            'SNR': snrs[:len(labels)],  # データ件数を揃える
+            'SNR': snrs[:len(labels)],  
             'Is_Correct': (np.array(labels) == preds).astype(int),
             'Network': detector,
             'N_Sectors': n_sectors
         })
         
-        out_csv = f"results_{model_name}_{detector}_{n_sectors}sectors.csv"
+        # --- 修正: 出力先ディレクトリの作成とパスの結合 ---
+        os.makedirs(args.out_csv_dir, exist_ok=True)
+        csv_filename = f"results_{model_name}_{detector}_{n_sectors}sectors.csv"
+        out_csv = os.path.join(args.out_csv_dir, csv_filename)
+        # ---------------------------------------------------
+        
         df_results.to_csv(out_csv, index=False)
         # ==========================================================
 
