@@ -25,6 +25,7 @@ def get_arguments():
     parser.add_argument("--HEALPix", action='store_true', help="Use HEALPix sky tessellation (default: False)")
     parser.add_argument("--method", type=int, default=1, help="Architecture selection: 1=MLP, 2=TCN")
     parser.add_argument("--use_KAGRA", action='store_true', help="Use 4 detectors HLVK (default: HLV 3 detectors)")
+    # バッチサイズは512のままでOK（AMP導入により計算が軽くなるため）
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epoch", type=int, default=200)
@@ -44,6 +45,9 @@ def train_model(net, dataloaders_dict, criterion, optimizer, scheduler, num_epoc
     patience = 20
     no_improve_count = 0
 
+    # === 追加: 混合精度(AMP)のためのスケーラーを初期化 ===
+    scaler = torch.amp.GradScaler('cuda')
+
     for epoch in range(num_epochs):
         print(f'Epoch {epoch + 1}/{num_epochs}', end='\t')
 
@@ -61,14 +65,20 @@ def train_model(net, dataloaders_dict, criterion, optimizer, scheduler, num_epoc
                 labels = labels.to(device)
 
                 optimizer.zero_grad()
+                
+                # === 変更: AMPを使った高速な順伝播と逆伝播 ===
                 with torch.set_grad_enabled(phase == 'train'):
-                    outputs = net(inputs)
-                    loss = criterion(outputs, labels)
+                    with torch.amp.autocast('cuda'): # 半精度での計算を許可
+                        outputs = net(inputs)
+                        loss = criterion(outputs, labels)
+                    
                     _, preds = torch.max(outputs, 1)
 
                     if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
+                        # スケーラーを使ってLossを逆伝播し、重みを更新
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
 
                     epoch_loss += loss.item() * inputs.size(0)
                     epoch_corrects += torch.sum(preds == labels.data)
@@ -99,7 +109,8 @@ def train_model(net, dataloaders_dict, criterion, optimizer, scheduler, num_epoc
             print(f'Best Accuracy: {max_acc:.4f}')
             break
 
-        scheduler.step(epoch_loss)
+        # === 変更: CosineAnnealingLR は epoch_loss を引数に取らない ===
+        scheduler.step()
 
     return {'train_loss': train_loss, 'train_acc': train_acc, 'val_loss': val_loss, 'val_acc': val_acc}
 
@@ -167,9 +178,14 @@ if __name__ == '__main__':
         )
 
         net.to(device)
-        criterion = nn.CrossEntropyLoss()
+        
+        # === 変更: Label Smoothing を 0.1 で導入 ===
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+        
         optimizer = optim.AdamW(net.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+        
+        # === 変更: CosineAnnealingLR への置き換え ===
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch)
 
         history = train_model(
             net=net,
