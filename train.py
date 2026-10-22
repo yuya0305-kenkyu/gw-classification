@@ -110,7 +110,7 @@ def train_model(net, dataloaders_dict, criterion, optimizer, scheduler, num_epoc
             break
 
         # === 変更: CosineAnnealingLR は epoch_loss を引数に取らない ===
-        scheduler.step()
+        # scheduler.step()
 
     return {'train_loss': train_loss, 'train_acc': train_acc, 'val_loss': val_loss, 'val_acc': val_acc}
 
@@ -186,6 +186,7 @@ if __name__ == '__main__':
         
         # === 変更: CosineAnnealingLR への置き換え ===
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch)
+	# scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
         history = train_model(
             net=net,
