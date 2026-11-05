@@ -122,12 +122,18 @@ if __name__ == '__main__':
     else:
         n_sectors_list = [12 * (4 ** i) for i in range(3)]
 
-    # === 追加処理: HDF5ファイル群からSNRのリストを一括抽出 ===
+    # === 追加処理: HDF5ファイル群からSNR、赤緯、赤経を一括抽出 ===
     snrs = []
+    decs = []
+    ras = []
     for hdf_path in args.hdf_file:
         with h5py.File(hdf_path, 'r') as f:
             snrs += list(f['injection_parameters']['injection_snr'][()])
+            decs += list(f['injection_parameters']['dec'][()])       # 追加
+            ras += list(f['injection_parameters']['ra'][()])         # 追加
     snrs = np.array(snrs)
+    decs = np.array(decs)
+    ras = np.array(ras)
     # ==========================================================
 
     accs = []
@@ -172,7 +178,9 @@ if __name__ == '__main__':
         df_results = pd.DataFrame({
             'True_Sector': labels,
             'Pred_Sector': preds,
-            'SNR': snrs[:len(labels)],  
+            'SNR': snrs[:len(labels)],
+            'Declination': decs[:len(labels)],   # 追加
+            'Right_Ascension': ras[:len(labels)], # 追加
             'Is_Correct': (np.array(labels) == preds).astype(int),
             'Network': detector,
             'N_Sectors': n_sectors

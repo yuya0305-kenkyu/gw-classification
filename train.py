@@ -180,13 +180,13 @@ if __name__ == '__main__':
         net.to(device)
         
         # === 変更: Label Smoothing を 0.1 で導入 ===
-        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.0)
         
         optimizer = optim.AdamW(net.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
         
         # === 変更: CosineAnnealingLR への置き換え ===
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch)
-	# scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+        #scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch)
+	scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
         history = train_model(
             net=net,
